@@ -1,0 +1,327 @@
+---
+title: "Audit_Analysis_Code"
+author: "Krish"
+format: html
+editor: visual
+toc: true
+    toc-depth: 3
+    toc-title: "Contents"
+    theme: cosmo
+    code-fold: true
+    code-tools: true
+    fig-width: 12
+    fig-height: 7
+    self-contained: true
+  pdf:
+    toc: true
+    fig-width: 12
+    fig-height: 7
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+## Libraries
+
+```{r}
+#| label: setup
+#| include: false
+
+library(tidyverse)
+library(scales)
+library(knitr)
+library(kableExtra)
+library(patchwork)
+```
+
+## Data Cleaning and Preparation 
+
+```{r}
+df <- read_csv("alcohol data.csv") |>
+  mutate(
+    Alc_Score  = as.numeric(Alc_Score),
+    Age        = as.numeric(Age),
+    Gender     = as.numeric(Gender),
+    Year       = as.numeric(Year),
+    Res_Area   = as.numeric(Res_Area),
+
+    Gender_lbl = factor(Gender, levels = 1:2, labels = c("Male", "Female")),
+
+    Year_lbl   = factor(Year, levels = 1:5,
+                        labels = c("1st Year","2nd Year","3rd Year",
+                                   "4th Year","5th+ Year")),
+
+    Res        = case_when(
+      Res_Area %in% c(1, 2, 3) ~ "On-Campus",
+      TRUE                     ~ "Off-Campus"
+    ),
+
+    # AUDIT behavioral categories
+    any_drink  = as.numeric(Alc_Score > 0),
+    hazardous  = as.numeric(Alc_Score >= 8),
+    harmful    = as.numeric(Alc_Score >= 16)
+  )
+
+n_total <- sum(!is.na(df$Alc_Score))
+cat("Total valid responses:", n_total, "\n")
+
+df
+```
+
+## One-proportion z-test
+
+```{r}
+one_prop_z <- function(p_sample, p0, n) {
+  se <- sqrt(p0 * (1 - p0) / n)
+  z  <- (p_sample - p0) / se
+  p  <- 2 * pnorm(abs(z), lower.tail = FALSE)
+  list(z = round(z, 3), p = round(p, 4))
+}
+
+sig_label <- function(p) {
+  if      (p < 0.001) "< .001***"
+  else if (p < 0.01)  paste0(sprintf("%.3f", p), "**")
+  else if (p < 0.05)  paste0(sprintf("%.3f", p), "*")
+  else                paste0(sprintf("%.3f", p), " ns")
+}
+
+one_prop_z
+sig_label
+```
+
+##  Prevalence of Drinking Behaviors: UMass SPHHS vs. National Table
+
+```{r}
+compute_row <- function(subdf, label, n_nat, p_any_nat, p_haz_nat) {
+  n_u     <- sum(!is.na(subdf$Alc_Score))
+  p_any_u <- mean(subdf$any_drink, na.rm = TRUE)
+  p_haz_u <- mean(subdf$hazardous, na.rm = TRUE)
+
+  z1 <- one_prop_z(p_any_u, p_any_nat, n_u)
+  z2 <- one_prop_z(p_haz_u, p_haz_nat, n_u)
+
+  tibble(
+    Group          = label,
+    `N (UMass)`    = n_u,
+    `N (National)` = n_nat,
+    `Any Drink — UMass %`    = sprintf("%.1f", p_any_u * 100),
+    `Any Drink — National %` = sprintf("%.1f", p_any_nat * 100),
+    `Any Drink — z`          = sprintf("%.2f", z1$z),
+    `Any Drink — p`          = sig_label(z1$p),
+    `Hazardous — UMass %`    = sprintf("%.1f", p_haz_u * 100),
+    `Hazardous — National %` = sprintf("%.1f", p_haz_nat * 100),
+    `Hazardous — z`          = sprintf("%.2f", z2$z),
+    `Hazardous — p`          = sig_label(z2$p)
+  )
+}
+
+male_df   <- df |> filter(Gender_lbl == "Male")
+female_df <- df |> filter(Gender_lbl == "Female")
+
+table_data <- bind_rows(
+  compute_row(df,        "Total UMass SPHHS",  1776, 0.809, 0.481),
+  compute_row(male_df,   "  Male",              727,  0.822, 0.534),
+  compute_row(df |> filter(Gender_lbl == "Male",   Res == "On-Campus"),
+              "    On-Campus",  251, 0.804, 0.540),
+  compute_row(df |> filter(Gender_lbl == "Male",   Res == "Off-Campus"),
+              "    Off-Campus", 476, 0.832, 0.531),
+  compute_row(female_df, "  Female",           1049, 0.796, 0.434),
+  compute_row(df |> filter(Gender_lbl == "Female", Res == "On-Campus"),
+              "    On-Campus",  294, 0.795, 0.496),
+  compute_row(df |> filter(Gender_lbl == "Female", Res == "Off-Campus"),
+              "    Off-Campus", 755, 0.797, 0.410)
+)
+
+table_data |>
+  kbl(
+    caption = "Table 1. Prevalence of Drinking Behaviors and One-Proportion Z-Test Results: UMass SPHHS vs. National College Sample (Ages 18–29)",
+    align   = c("l", rep("c", ncol(table_data) - 1))
+  ) |>
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed", "bordered"),
+    full_width        = TRUE,
+    font_size         = 13
+  ) |>
+  add_header_above(c(
+    " " = 3,
+    "Any Drinking" = 4,
+    "Hazardous Drinking (AUDIT ≥ 8)" = 4
+  )) |>
+  row_spec(0, bold = TRUE, background = "#1B3A6B", color = "white") |>
+  row_spec(1, bold = TRUE, background = "#D9E2F3") |>
+  row_spec(c(2, 5), background = "#EEF2F9") |>
+  footnote(
+    general = "National benchmarks: Dawson et al. (2004), college students on+off campus, ages 18–29. Hazardous = AUDIT ≥ 8. *** p < .001  ** p < .01  * p < .05  ns = not significant.",
+    general_title = "Note: "
+  )
+```
+
+## UMass SPHHS vs. National: Side-by-Side Bar Graphs with Z-Test Results 
+
+```{r}
+national <- tibble(
+  group     = c("Overall", "Overall", "Overall",
+                "Male",    "Male",    "Male",
+                "Female",  "Female",  "Female"),
+  category  = rep(c("Any Drinking",
+                    "Hazardous Drinking\n(AUDIT ≥ 8)",
+                    "Harmful Drinking\n(AUDIT ≥ 16)"), 3),
+  pct       = c(80.9, 48.1, 26.8,
+                82.2, 53.4, 35.0,
+                79.6, 43.4, 27.0),
+  source    = "National\n(College 18–29)"
+)
+
+umass_overall <- df |>
+  summarise(
+    any  = mean(any_drink,  na.rm = TRUE) * 100,
+    haz  = mean(hazardous,  na.rm = TRUE) * 100,
+    harm = mean(harmful,    na.rm = TRUE) * 100
+  )
+
+umass_male <- df |> filter(Gender_lbl == "Male") |>
+  summarise(
+    any  = mean(any_drink,  na.rm = TRUE) * 100,
+    haz  = mean(hazardous,  na.rm = TRUE) * 100,
+    harm = mean(harmful,    na.rm = TRUE) * 100
+  )
+
+umass_female <- df |> filter(Gender_lbl == "Female") |>
+  summarise(
+    any  = mean(any_drink,  na.rm = TRUE) * 100,
+    haz  = mean(hazardous,  na.rm = TRUE) * 100,
+    harm = mean(harmful,    na.rm = TRUE) * 100
+  )
+
+umass <- tibble(
+  group    = c("Overall","Overall","Overall",
+               "Male","Male","Male",
+               "Female","Female","Female"),
+  category = rep(c("Any Drinking",
+                   "Hazardous Drinking\n(AUDIT ≥ 8)",
+                   "Harmful Drinking\n(AUDIT ≥ 16)"), 3),
+  pct      = c(umass_overall$any,  umass_overall$haz,  umass_overall$harm,
+               umass_male$any,     umass_male$haz,     umass_male$harm,
+               umass_female$any,   umass_female$haz,   umass_female$harm),
+  source   = "UMass SPHHS"
+)
+
+plot_df <- bind_rows(umass, national) |>
+  mutate(
+    group    = factor(group,    levels = c("Overall","Male","Female")),
+    category = factor(category, levels = c("Any Drinking",
+                                           "Hazardous Drinking\n(AUDIT ≥ 8)",
+                                           "Harmful Drinking\n(AUDIT ≥ 16)")),
+    source   = factor(source,   levels = c("UMass SPHHS", "National\n(College 18–29)"))
+  )
+
+# ── Z-test p-values for annotation ───────────────────────────────────────────
+pval_df <- tribble(
+  ~group,     ~category,                               ~umass_pct, ~nat_pct, ~n_u, ~p0,
+  "Overall",  "Any Drinking",                            76.4,       80.9,    203,  0.809,
+  "Overall",  "Hazardous Drinking\n(AUDIT ≥ 8)",         32.5,       48.1,    203,  0.481,
+  "Overall",  "Harmful Drinking\n(AUDIT ≥ 16)",           3.0,       26.8,    203,  0.268,
+  "Male",     "Any Drinking",                            67.5,       82.2,     40,  0.822,
+  "Male",     "Hazardous Drinking\n(AUDIT ≥ 8)",         32.5,       53.4,     40,  0.534,
+  "Male",     "Harmful Drinking\n(AUDIT ≥ 16)",           5.0,       35.0,     40,  0.350,
+  "Female",   "Any Drinking",                            78.4,       79.6,    162,  0.796,
+  "Female",   "Hazardous Drinking\n(AUDIT ≥ 8)",         32.1,       43.4,    162,  0.434,
+  "Female",   "Harmful Drinking\n(AUDIT ≥ 16)",           2.5,       27.0,    162,  0.270
+) |>
+  rowwise() |>
+  mutate(
+    z_stat    = one_prop_z(umass_pct / 100, p0, n_u)$z,
+    p_val     = one_prop_z(umass_pct / 100, p0, n_u)$p,
+    p_label   = case_when(
+      p_val < 0.001 ~ "p < .001***",
+      p_val < 0.01  ~ paste0("p = ", sprintf("%.3f", p_val), "**"),
+      p_val < 0.05  ~ paste0("p = ", sprintf("%.3f", p_val), "*"),
+      TRUE          ~ paste0("p = ", sprintf("%.3f", p_val), " (ns)")
+    ),
+    sig_color = if_else(p_val < 0.05, "#C0392B", "#27AE60"),
+    y_pos     = pmax(umass_pct, nat_pct) + 6,
+    group     = factor(group,    levels = c("Overall","Male","Female")),
+    category  = factor(category, levels = c("Any Drinking",
+                                            "Hazardous Drinking\n(AUDIT ≥ 8)",
+                                            "Harmful Drinking\n(AUDIT ≥ 16)"))
+  ) |>
+  ungroup()
+
+#| label: fig3-plot
+#| fig-cap: "Figure 3. Comparison of drinking behavior prevalence: UMass SPHHS students vs. national college sample (ages 18–29). Brackets indicate one-proportion z-test results. *** p < .001  ** p < .01  * p < .05  ns = not significant."
+#| fig-width: 16
+#| fig-height: 8
+
+
+group_labels <- c(
+  "Overall" = "Overall\n(UMass n=203)",
+  "Male"    = "Male\n(UMass n=40)",
+  "Female"  = "Female\n(UMass n=162)"
+)
+
+ggplot(plot_df, aes(x = category, y = pct, fill = source)) +
+  geom_col(
+    position = position_dodge(width = 0.72),
+    width    = 0.65,
+    alpha    = 0.88,
+    color    = "white",
+    linewidth = 0.4
+  ) +
+  geom_text(
+    aes(label = paste0(round(pct, 1), "%")),
+    position = position_dodge(width = 0.72),
+    vjust    = -0.5,
+    fontface = "bold",
+    size     = 3.8
+  ) +
+  # Significance brackets
+  geom_segment(
+    data = pval_df,
+    aes(x    = as.numeric(category) - 0.18,
+        xend = as.numeric(category) + 0.18,
+        y    = y_pos + 1.5,
+        yend = y_pos + 1.5),
+    inherit.aes = FALSE,
+    color = "#2C3E50", linewidth = 0.8
+  ) +
+  geom_text(
+    data        = pval_df,
+    aes(x = category, y = y_pos + 4.5, label = p_label, color = sig_color),
+    inherit.aes = FALSE,
+    fontface    = "bold",
+    size        = 3.2
+  ) +
+  scale_color_identity() +
+  scale_fill_manual(
+    values = c("UMass SPHHS"              = "#2C6FAC",
+               "National\n(College 18–29)" = "#C0392B"),
+    name   = NULL
+  ) +
+  scale_y_continuous(
+    labels = percent_format(scale = 1),
+    limits = c(0, 108),
+    breaks = seq(0, 100, 20)
+  ) +
+  facet_wrap(
+    ~group,
+    labeller = as_labeller(group_labels)
+  ) +
+  labs(
+    title    = "Figure 3. Comparison of Drinking Behavior Prevalence:\nUMass SPHHS Students vs. National College Sample (One-Proportion Z-Test)",
+    x        = NULL,
+    y        = "Prevalence (%)",
+    caption  = "National benchmarks: Dawson et al. (2004). *** p < .001  ** p < .01  * p < .05  ns = not significant."
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title       = element_text(face = "bold", size = 13, hjust = 0.5),
+    strip.text       = element_text(face = "bold", size = 12),
+    axis.text.x      = element_text(size = 10),
+    legend.position  = "top",
+    legend.text      = element_text(size = 11),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor   = element_blank(),
+    plot.caption     = element_text(color = "gray50", size = 9)
+  )
+```
